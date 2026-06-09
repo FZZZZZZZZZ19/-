@@ -881,6 +881,25 @@ class FinalApp(QWidget):
         path_layout = QVBoxLayout()
         path_layout.setSpacing(10)
         
+        # 路径规划模式选择
+        mode_layout = QHBoxLayout()
+        mode_layout.setSpacing(15)
+        
+        lbl_mode = QLabel('规划模式:')
+        lbl_mode.setStyleSheet('color: #2c5aa0; font-weight: 500;')
+        mode_layout.addWidget(lbl_mode)
+        
+        self.radio_mode_old = QRadioButton('原模式（方向不变）')
+        self.radio_mode_old.setChecked(True)
+        self.radio_mode_old.setStyleSheet('color: #2c5aa0;')
+        mode_layout.addWidget(self.radio_mode_old)
+        
+        self.radio_mode_new = QRadioButton('新模式（转向后直行）')
+        self.radio_mode_new.setStyleSheet('color: #2c5aa0;')
+        mode_layout.addWidget(self.radio_mode_new)
+        
+        path_layout.addLayout(mode_layout)
+        
         self.btn_plan = QPushButton('规划路径')
         self.btn_plan.setStyleSheet(self.get_button_style('blue'))
         self.btn_plan.setEnabled(False)
@@ -1560,12 +1579,22 @@ class FinalApp(QWidget):
             
         from collections import deque
         
+        use_new_mode = self.radio_mode_new.isChecked()
+        
+        if use_new_mode:
+            self.plan_path_new_mode()
+        else:
+            self.plan_path_old_mode()
+    
+    def plan_path_old_mode(self):
+        """原模式：车头方向不变，直接按格子移动"""
+        from collections import deque
+        
         visited = [[False for _ in range(7)] for _ in range(7)]
         queue = deque()
         queue.append((self.start_point[0], self.start_point[1], []))
         visited[self.start_point[0]][self.start_point[1]] = True
         
-        # 终点固定在左上角(0,0)
         target_pos = (0, 0)
         found_path = None
         
@@ -1598,6 +1627,65 @@ class FinalApp(QWidget):
                     new_path.append((new_row, new_col, f'{direction} {number}'))
                     queue.append((new_row, new_col, new_path))
                     
+        self._finalize_path(found_path)
+    
+    def plan_path_new_mode(self):
+        """新模式：LEFT/RIGHT先转向再直行，车头方向会改变"""
+        from collections import deque
+        
+        visited = [[[False for _ in range(4)] for _ in range(7)] for _ in range(7)]
+        queue = deque()
+        
+        initial_heading = 0
+        queue.append((self.start_point[0], self.start_point[1], initial_heading, []))
+        visited[self.start_point[0]][self.start_point[1]][initial_heading] = True
+        
+        target_pos = (0, 0)
+        found_path = None
+        
+        heading_deltas = {
+            0: (-1, 0),
+            1: (0, 1),
+            2: (1, 0),
+            3: (0, -1)
+        }
+        
+        while queue:
+            row, col, heading, path = queue.popleft()
+            
+            if (row, col) == target_pos:
+                found_path = path.copy()
+                break
+                
+            cell = self.maze_data[row][col]
+            direction = cell.get('direction')
+            number = cell.get('number')
+            
+            if direction and number is not None and number > 0:
+                new_heading = heading
+                cmd_direction = direction
+                
+                if direction == 'RIGHT':
+                    new_heading = (heading + 1) % 4
+                    cmd_direction = 'FORWARD'
+                elif direction == 'LEFT':
+                    new_heading = (heading - 1) % 4
+                    cmd_direction = 'FORWARD'
+                
+                dr, dc = heading_deltas[new_heading]
+                new_row = row + dr * number
+                new_col = col + dc * number
+                
+                if 0 <= new_row < 7 and 0 <= new_col < 7 and not visited[new_row][new_col][new_heading]:
+                    visited[new_row][new_col][new_heading] = True
+                    new_path = path.copy()
+                    new_path.append((new_row, new_col, f'{direction} {number}'))
+                    queue.append((new_row, new_col, new_heading, new_path))
+                    
+        self._finalize_path(found_path)
+    
+    def _finalize_path(self, found_path):
+        """路径规划完成后的通用处理"""
         if found_path:
             self.path = found_path
             self.path_cells = [(p[0], p[1]) for p in found_path]
@@ -1609,12 +1697,10 @@ class FinalApp(QWidget):
             for cmd in self.commands:
                 self.list_path.addItem(cmd)
                 
-            # 只有路径完整到达终点才启用发送按钮
             self.btn_send.setEnabled(True)
             self.btn_return.setEnabled(False)
             QMessageBox.information(self, '成功', f'路径规划完成! 共{len(self.commands)}步到达终点(0,0)')
         else:
-            # 路径规划失败，不启用发送按钮
             self.btn_send.setEnabled(False)
             self.btn_return.setEnabled(False)
             self.commands = []

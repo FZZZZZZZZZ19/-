@@ -1,0 +1,5 @@
+PyQt5==5.15.10
+ultralytics==8.2.87
+opencv-python==4.10.0.84
+numpy==1.26.4
+pybluez==0.23
