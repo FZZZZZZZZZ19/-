@@ -21,6 +21,10 @@ except ImportError:
     print("警告: pybluez未安装，蓝牙功能不可用")
 
 
+def resize_show(window_name, img, scale=0.8):
+    h, w = img.shape[:2]
+    cv2.imshow(window_name, cv2.resize(img, (int(w*scale), int(h*scale))))
+
 # ========== seal.py 视觉识别逻辑（完全照搬） ==========
 def perspective_transform(image, src_points, dst_points=None, output_size=None):
     """透视变换"""
@@ -66,7 +70,7 @@ def dect_dir(crop_img):
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return "unknown"
-
+    
     cnt = max(contours, key=cv2.contourArea)
 
     M = cv2.moments(cnt)
@@ -99,16 +103,21 @@ def get_lines(img):
     white_copy = white.copy()
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    binary = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 15)
-    kernel = np.ones((5, 5), np.uint8)
+    binary = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 10)
+    resize_show("thresh",binary,0.8)
+    cv2.waitKey()
+    kernel = np.ones((7,7), np.uint8)
+
     closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    
-    lines = cv2.HoughLinesP(closed, rho=1, theta=np.pi/180, threshold=120, minLineLength=800, maxLineGap=80)
+    resize_show("thresh",closed,0.8)
+    lines = cv2.HoughLinesP(closed, rho=1, theta=np.pi/180, threshold=110, minLineLength=700, maxLineGap=60)
     i = 0
     for line in lines:
         x1, y1, x2, y2 = line[0]
         cv2.line(white, (x1, y1), (x2, y2), (0, 0, 0), thickness=5, lineType=cv2.LINE_AA)
         i = i + 1
+    resize_show("lines",white)
+    cv2.waitKey()
     print(i)
 
     h_lines, v_lines = [], []
@@ -265,8 +274,8 @@ def divide_dect(img, model, use_centroid_for_arrows=False):
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
         area = w * h
-
-        if 120 < area < 5000 and img_w*0.05 < w < img_w * 0.75 and img_h*0.05 < h < img_h * 0.75:
+        bias = 3
+        if 300 < area < 5000 and img_w*0.05 < w < img_w * 0.75 and img_h*0.05 < h < img_h * 0.75 and (x>=bias or w>=img_w*0.1) and (y>=bias or h>=img_h*0.1) and (x+w<=img_w-bias or w>=img_w*0.1) and (y + h <=img_h-bias or h >=img_h*0.1):
             pad = 12
             x1 = max(0, x - pad)
             y1 = max(0, y - pad)
@@ -417,7 +426,10 @@ class ImageContainer(QLabel):
             QColor(0, 0, 255),    # 蓝-右下
             QColor(255, 165, 0)   # 橙-左下
         ]
-        self.point_radius = 10
+        # ========== 1. 超大窗口选点半径修改：从10减小为5，可按需调整为3/4等数值 ==========
+        self.point_radius = 5
+        # ========== 2. 新增：实时存储鼠标当前位置，用于连线绘制 ==========
+        self.current_mouse_pos = None
         self.display_image()
 
     def display_image(self):
@@ -440,21 +452,29 @@ class ImageContainer(QLabel):
         self.update()
 
     def mousePressEvent(self, event):
-        """处理鼠标点击"""
+        """处理鼠标点击（原有逻辑完全保留）"""
         self.point_clicked.emit(event)
 
+    # ========== 3. 新增：鼠标移动实时追踪，触发连线重绘 ==========
+    def mouseMoveEvent(self, event):
+        """鼠标移动时，实时更新鼠标位置并触发画面重绘"""
+        # 仅在未选满4个点时开启实时追踪，选满后自动停止
+        if len(self.selected_points) < 4:
+            self.current_mouse_pos = (event.x(), event.y())
+            self.update()  # 实时触发重绘，保证连线跟随鼠标无延迟
+
     def paintEvent(self, event):
-        """绘制图片和标记点"""
+        """绘制图片、标记点、所有已选点与鼠标的实时连线"""
         super().paintEvent(event)
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.Antialiasing)  # 抗锯齿，保证线条和点更平滑
 
-        # 绘制已选点
+        # 绘制已选点（原有逻辑完全保留，仅适配了修改后的半径）
         for idx, (x, y) in enumerate(self.selected_points):
             color = self.point_color[idx]
             painter.setPen(QPen(color, 3))
             painter.setBrush(color)
-            # 绘制大圆点
+            # 绘制圆点
             painter.drawEllipse(x - self.point_radius, y - self.point_radius,
                               self.point_radius * 2, self.point_radius * 2)
             # 绘制白色边框
@@ -462,11 +482,29 @@ class ImageContainer(QLabel):
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(x - self.point_radius, y - self.point_radius,
                               self.point_radius * 2, self.point_radius * 2)
-            # 绘制序号
+            # 绘制点序号
             painter.setPen(Qt.white)
             painter.setFont(QFont("Arial", 12, QFont.Bold))
             painter.drawText(x - 5, y + 5, str(idx + 1))
 
+        # ========== 4. 核心修改：所有已选点都和当前鼠标位置实时连线（多边形绘制效果） ==========
+        # 触发条件：已选至少1个点、未选满4个点、鼠标有有效位置
+        if len(self.selected_points) > 0 and len(self.selected_points) < 4 and self.current_mouse_pos is not None:
+            # 取当前鼠标实时坐标
+            mouse_x, mouse_y = self.current_mouse_pos
+
+            # 遍历所有已选点，每个点都和鼠标位置画一条连线
+            for idx, (point_x, point_y) in enumerate(self.selected_points):
+                # 连线样式：和对应点同色、半透明虚线、线宽2，不遮挡迷宫图片
+                line_color = self.point_color[idx]
+                line_color.setAlpha(150)  # 半透明，0-255，数值越低越透明
+                line_pen = QPen(line_color, 2)
+                line_pen.setStyle(Qt.DashLine)  # 虚线样式，更美观不突兀
+
+                # 绘制当前点到鼠标的实时连线
+                painter.setPen(line_pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawLine(point_x, point_y, mouse_x, mouse_y)
 
 class LargeImageSelectDialog(QDialog):
     """超大窗口精确选择角点对话框"""
@@ -1756,9 +1794,11 @@ class FinalApp(QWidget):
             # 初始化7×7迷宫
             self.maze_data = [[{'number': None, 'direction': None} for _ in range(7)] for _ in range(7)]
             
-            # 终点(0,0)默认填数字0，因为模型无法识别数字0
-            # 且(0,0)作为终点不需要移动指令
+            # 终点(0,0)默认填数字0和方向UP
+            # 数字0是因为模型无法识别数字0，且(0,0)作为终点不需要移动指令
+            # 方向UP是为了保持数据一致性（虽然不会被使用）
             self.maze_data[0][0]['number'] = 0
+            self.maze_data[0][0]['direction'] = 'UP'
             
             # 获取箭头检测模式
             use_centroid = self.radio_centroid.isChecked()
@@ -1804,7 +1844,7 @@ class FinalApp(QWidget):
             self.btn_plan.setEnabled(True)
             # 终点固定在左上角(0,0)，标记终点位置
             self.maze_grid.set_start_point(0, 0)
-            self.lbl_start_info.setText('终点固定在左上角(0,0)，请点击迷宫边界格子设置起点')
+            self.lbl_start_info.setText('终点固定在左上角(0,0)，请点击任意格子设置起点')
             
         except Exception as e:
             error_msg = f'检测失败: {str(e)}'
@@ -1818,14 +1858,13 @@ class FinalApp(QWidget):
         
         # 终点固定在左上角(0,0)，不能作为起点
         if row == 0 and col == 0:
-            QMessageBox.warning(self, '提示', '左上角(0,0)是终点，请选择其他边界格子作为起点')
+            QMessageBox.warning(self, '提示', '左上角(0,0)是终点，请选择其他格子作为起点')
             return
-            
-        # 只能选择边界格子作为起点
-        if row == 0 or row == 6 or col == 0 or col == 6:
-            self.start_point = (row, col)
-            self.maze_grid.set_start_point(row, col)
-            self.lbl_start_info.setText(f'起点已设置: ({row},{col})，终点固定在(0,0)')
+        
+        # 除了终点(0,0)之外的所有格子都可以作为起点
+        self.start_point = (row, col)
+        self.maze_grid.set_start_point(row, col)
+        self.lbl_start_info.setText(f'起点已设置: ({row},{col})，终点固定在(0,0)')
             
     def plan_path(self):
         if self.maze_data is None or self.start_point is None:
@@ -1918,8 +1957,10 @@ class FinalApp(QWidget):
         
         direction_to_heading = {
             'FORWARD': 0,
+            'UP': 0,
             'RIGHT': 1,
             'BACKWARD': 2,
+            'DOWN': 2,
             'LEFT': 3
         }
         
